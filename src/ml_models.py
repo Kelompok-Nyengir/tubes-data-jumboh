@@ -1,5 +1,11 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import *
+# FIXED: Explicit imports with aliases to avoid conflicts with Python built-ins
+from pyspark.sql.functions import (
+    col, when, count, avg, sum as spark_sum, max as spark_max,
+    min as spark_min, mean, stddev, percentile_approx,
+    isnan, isnull, desc, asc, lit, array, greatest, least,
+    sqrt, pow, abs as spark_abs, reduce, add
+)
 from pyspark.sql.types import *
 from pyspark.ml.feature import VectorAssembler, StandardScaler, StringIndexer, OneHotEncoder
 from pyspark.ml.classification import LogisticRegression, RandomForestClassifier, GBTClassifier, \
@@ -12,6 +18,7 @@ import numpy as np
 import logging
 import time
 import os
+import builtins  # FIXED: Import builtins to access Python's built-in functions
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +29,7 @@ class CreditDefaultMLPipeline:
     """
     Comprehensive machine learning pipeline for credit card default analysis
     Compatible with the 05_machine_learning.ipynb notebook
+    FIXED: Resolved PySpark function conflicts with Python built-ins
     """
 
     def __init__(self, spark_session):
@@ -102,12 +110,14 @@ class CreditDefaultMLPipeline:
         """
         Split data into train, validation, and test sets
         Returns: (train_df, val_df, test_df)
+        FIXED: Use Python's built-in abs() function
         """
         logger.info("Splitting data into train/validation/test sets...")
 
+        # FIXED: Use Python's built-in abs function
         # Ensure ratios sum to 1
         total_ratio = train_ratio + validation_ratio + test_ratio
-        if abs(total_ratio - 1.0) > 0.001:
+        if builtins.abs(total_ratio - 1.0) > 0.001:  # Use Python's abs()
             logger.warning(f"Ratios sum to {total_ratio}, normalizing...")
             train_ratio /= total_ratio
             validation_ratio /= total_ratio
@@ -434,7 +444,8 @@ class CreditDefaultMLPipeline:
             if not evaluation_results:
                 return None
 
-            best_model_name = max(evaluation_results.keys(), key=lambda k: evaluation_results[k]['AUC'])
+            best_model_name = builtins.max(evaluation_results.keys(),
+                                           key=lambda k: evaluation_results[k]['AUC'])  # FIXED: Use Python's max
             best_model = self.trained_models[best_model_name]
 
             # Basic statistics
