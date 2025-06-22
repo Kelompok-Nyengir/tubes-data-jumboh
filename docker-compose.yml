@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  spark-standalone:
+    image: bitnami/spark:3.4
+    container_name: spark-standalone
+    hostname: spark-standalone
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+      - SPARK_USER=spark
+    ports:
+      - "8080:8080"  # Spark Master Web UI
+      - "7077:7077"  # Spark Master Port
+      - "4040:4040"  # Spark Application UI
+    volumes:
+      - ./apps:/opt/bitnami/spark/apps
+      - ./data:/opt/bitnami/spark/data
+      - ./notebooks:/opt/bitnami/spark/notebooks
+      - ./logs:/opt/bitnami/spark/logs
+    networks:
+      - spark-network
+
+  jupyter:
+    image: jupyter/pyspark-notebook:latest
+    container_name: jupyter-pyspark
+    ports:
+      - "8888:8888"
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - JUPYTER_TOKEN=2025nyengir  # Simple token for your assignment
+      - GRANT_SUDO=yes
+      - SPARK_OPTS=--master=local[*]  # Use local mode instead of cluster
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ./data:/home/jovyan/data
+      - ./apps:/home/jovyan/apps
+    networks:
+      - spark-network
+
+networks:
+  spark-network:
+    driver: bridge
