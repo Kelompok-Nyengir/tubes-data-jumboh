@@ -2,9 +2,9 @@ from pyspark.sql import SparkSession
 # FIXED: Explicit imports with aliases to avoid conflicts with Python built-ins
 from pyspark.sql.functions import (
     col, when, count, avg, sum as spark_sum, max as spark_max,
-    min as spark_min, mean, stddev, percentile_approx,
+    min as spark_min, mean, stddev,
     isnan, isnull, desc, asc, lit, array, greatest, least,
-    sqrt, pow, abs as spark_abs, reduce, add
+    sqrt, pow, abs as spark_abs,
 )
 from pyspark.sql.types import *
 from pyspark.ml.feature import VectorAssembler, StandardScaler, StringIndexer, OneHotEncoder
