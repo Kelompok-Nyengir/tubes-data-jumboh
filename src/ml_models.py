@@ -2,9 +2,9 @@ from pyspark.sql import SparkSession
 # FIXED: Explicit imports with aliases to avoid conflicts with Python built-ins
 from pyspark.sql.functions import (
     col, when, count, avg, sum as spark_sum, max as spark_max,
-    min as spark_min, mean, stddev,
+    min as spark_min, mean, stddev, percentile_approx,
     isnan, isnull, desc, asc, lit, array, greatest, least,
-    sqrt, pow, abs as spark_abs,
+    sqrt, pow, abs as spark_abs, reduce, add
 )
 from pyspark.sql.types import *
 from pyspark.ml.feature import VectorAssembler, StandardScaler, StringIndexer, OneHotEncoder
@@ -29,7 +29,7 @@ class CreditDefaultMLPipeline:
     """
     Comprehensive machine learning pipeline for credit card default analysis
     Compatible with the 05_machine_learning.ipynb notebook
-    FIXED: Resolved PySpark function conflicts with Python built-ins
+    FIXED: Resolved PySpark function conflicts and preprocessing pipeline integration
     """
 
     def __init__(self, spark_session):
@@ -37,7 +37,7 @@ class CreditDefaultMLPipeline:
         self.spark = spark_session
         self.training_times = {}
         self.trained_models = {}
-        self.preprocessing_pipeline = None
+        self.fitted_preprocessing_pipeline = None  # FIXED: Store fitted preprocessing pipeline
         self.feature_names = []
 
         # Feature categorization
@@ -255,9 +255,27 @@ class CreditDefaultMLPipeline:
     def train_models(self, train_df, val_df, use_hyperparameter_tuning=True):
         """
         Train models with optional hyperparameter tuning
+        FIXED: Apply preprocessing pipeline before training
         Returns: Dictionary of trained models
         """
         logger.info("Starting model training...")
+
+        # FIXED: Check if preprocessing pipeline is fitted
+        if self.fitted_preprocessing_pipeline is None:
+            logger.error("❌ Preprocessing pipeline not fitted. Call fit_preprocessing_pipeline() first.")
+            return {}
+
+        # FIXED: Apply preprocessing to training data
+        logger.info("Applying preprocessing pipeline to training data...")
+        train_processed = self.fitted_preprocessing_pipeline.transform(train_df)
+
+        # Verify the scaledFeatures column exists
+        if 'scaledFeatures' not in train_processed.columns:
+            logger.error("❌ scaledFeatures column not found after preprocessing!")
+            logger.error(f"Available columns: {train_processed.columns}")
+            return {}
+
+        logger.info("✅ Training data preprocessing completed")
 
         models = self.initialize_models()
         param_grids = self.create_hyperparameter_grids()
@@ -285,12 +303,12 @@ class CreditDefaultMLPipeline:
                         seed=42
                     )
 
-                    # Fit the cross-validator
-                    cv_model = cv.fit(train_df)
+                    # FIXED: Fit the cross-validator on processed data
+                    cv_model = cv.fit(train_processed)
                     trained_model = cv_model.bestModel
                 else:
-                    # Train without hyperparameter tuning
-                    trained_model = model.fit(train_df)
+                    # FIXED: Train without hyperparameter tuning on processed data
+                    trained_model = model.fit(train_processed)
 
                 # Store the trained model
                 trained_models[model_name] = trained_model
@@ -312,9 +330,27 @@ class CreditDefaultMLPipeline:
 
         return trained_models
 
+    def fit_preprocessing_pipeline(self, train_df, numerical_features, categorical_features):
+        """
+        FIXED: New method to fit the preprocessing pipeline
+        Fit preprocessing pipeline on training data
+        Returns: Fitted preprocessing pipeline
+        """
+        logger.info("Fitting preprocessing pipeline on training data...")
+
+        # Create preprocessing pipeline
+        preprocessing_pipeline = self.create_preprocessing_pipeline(numerical_features, categorical_features)
+
+        # Fit the pipeline
+        self.fitted_preprocessing_pipeline = preprocessing_pipeline.fit(train_df)
+
+        logger.info("✅ Preprocessing pipeline fitted successfully")
+        return self.fitted_preprocessing_pipeline
+
     def evaluate_models(self, test_df):
         """
         Evaluate trained models
+        FIXED: Apply preprocessing to test data
         Returns: Dictionary with model metrics
         """
         logger.info("Evaluating trained models...")
@@ -322,6 +358,14 @@ class CreditDefaultMLPipeline:
         if not self.trained_models:
             logger.error("No trained models available for evaluation")
             return {}
+
+        if self.fitted_preprocessing_pipeline is None:
+            logger.error("❌ Preprocessing pipeline not fitted!")
+            return {}
+
+        # FIXED: Apply preprocessing to test data
+        logger.info("Applying preprocessing pipeline to test data...")
+        test_processed = self.fitted_preprocessing_pipeline.transform(test_df)
 
         # Create evaluators
         auc_evaluator = BinaryClassificationEvaluator(
@@ -360,8 +404,8 @@ class CreditDefaultMLPipeline:
             logger.info(f"Evaluating {model_name}...")
 
             try:
-                # Make predictions
-                predictions = model.transform(test_df)
+                # FIXED: Make predictions on processed test data
+                predictions = model.transform(test_processed)
 
                 # Calculate metrics
                 auc = auc_evaluator.evaluate(predictions)
@@ -430,12 +474,17 @@ class CreditDefaultMLPipeline:
     def create_business_insights(self, test_df):
         """
         Create business insights and analysis
+        FIXED: Apply preprocessing to test data
         Returns: Dictionary with business analysis
         """
         logger.info("Creating business insights...")
 
         if not self.trained_models:
             logger.warning("No trained models available for business insights")
+            return None
+
+        if self.fitted_preprocessing_pipeline is None:
+            logger.error("❌ Preprocessing pipeline not fitted!")
             return None
 
         try:
@@ -452,8 +501,9 @@ class CreditDefaultMLPipeline:
             total_customers = test_df.count()
             actual_defaults = test_df.filter(col("default payment next month") == 1).count()
 
-            # Get predictions from best model
-            predictions = best_model.transform(test_df)
+            # FIXED: Apply preprocessing and get predictions from best model
+            test_processed = self.fitted_preprocessing_pipeline.transform(test_df)
+            predictions = best_model.transform(test_processed)
             predicted_defaults = predictions.filter(col("prediction") == 1.0).count()
 
             business_insights = {
