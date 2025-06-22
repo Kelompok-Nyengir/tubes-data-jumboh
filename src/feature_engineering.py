@@ -1,6 +1,8 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import *
 from pyspark.sql.types import *
+from functools import reduce
+from operator import add
 import logging
 
 # Configure logging
@@ -26,6 +28,32 @@ class TemporalFeatureEngineer:
 
         logger.info("✅ TemporalFeatureEngineer initialized successfully")
 
+    def _safe_column_sum(self, columns_list):
+        """Safely sum a list of columns using reduce and add operator"""
+        if not columns_list:
+            return lit(0.0)
+        if len(columns_list) == 1:
+            return col(columns_list[0])
+        return reduce(add, [col(col_name) for col_name in columns_list])
+
+    def _safe_column_mean(self, columns_list):
+        """Safely calculate mean of a list of columns"""
+        if not columns_list:
+            return lit(0.0)
+        column_sum = self._safe_column_sum(columns_list)
+        return column_sum / len(columns_list)
+
+    def _safe_variance_calculation(self, columns_list, mean_col):
+        """Safely calculate variance for a list of columns"""
+        if not columns_list:
+            return lit(0.0)
+        if len(columns_list) == 1:
+            return lit(0.0)
+
+        squared_diffs = [pow(col(col_name) - mean_col, 2) for col_name in columns_list]
+        variance_sum = reduce(add, squared_diffs)
+        return variance_sum / len(columns_list)
+
     def create_payment_trend_features(self, df):
         """
         Create payment trend and volatility features from 6-month payment history
@@ -38,7 +66,7 @@ class TemporalFeatureEngineer:
         pay_cols = ['PAY_6', 'PAY_5', 'PAY_4', 'PAY_3', 'PAY_2', 'PAY_0']
 
         # Check if payment columns exist
-        available_pay_cols = [col for col in pay_cols if col in df.columns]
+        available_pay_cols = [col_name for col_name in pay_cols if col_name in df.columns]
 
         if len(available_pay_cols) >= 3:
             # Create payment trend slope using linear regression approach
@@ -54,15 +82,20 @@ class TemporalFeatureEngineer:
             pay_array = array(*[col(pay_col) for pay_col in available_pay_cols])
 
             # Custom volatility calculation using available payments
+            payment_mean = self._safe_column_mean(available_pay_cols)
+
             df_trends = df_trends.withColumn(
                 "payment_array", pay_array
             ).withColumn(
-                "payment_mean",
-                (sum([col(pay_col) for pay_col in available_pay_cols]) / len(available_pay_cols))
-            ).withColumn(
+                "payment_mean", payment_mean
+            )
+
+            # Calculate volatility using safe variance calculation
+            variance = self._safe_variance_calculation(available_pay_cols, col("payment_mean"))
+
+            df_trends = df_trends.withColumn(
                 "PAYMENT_STATUS_VOLATILITY",
-                sqrt(sum([pow(col(pay_col) - col("payment_mean"), 2)
-                          for pay_col in available_pay_cols]) / len(available_pay_cols))
+                sqrt(variance)
             )
 
             # Maximum and minimum payment delays
@@ -108,20 +141,20 @@ class TemporalFeatureEngineer:
         # Historical payments (older 3 months): PAY_4, PAY_5, PAY_6
         historical_cols = ['PAY_4', 'PAY_5', 'PAY_6']
 
-        available_recent = [col for col in recent_cols if col in df.columns]
-        available_historical = [col for col in historical_cols if col in df.columns]
+        available_recent = [col_name for col_name in recent_cols if col_name in df.columns]
+        available_historical = [col_name for col_name in historical_cols if col_name in df.columns]
 
         if available_recent and available_historical:
             # Recent average delay
             df_temporal = df_temporal.withColumn(
                 "RECENT_AVG_DELAY",
-                (sum([col(pay_col) for pay_col in available_recent]) / len(available_recent))
+                self._safe_column_mean(available_recent)
             )
 
             # Historical average delay
             df_temporal = df_temporal.withColumn(
                 "HISTORICAL_AVG_DELAY",
-                (sum([col(pay_col) for pay_col in available_historical]) / len(available_historical))
+                self._safe_column_mean(available_historical)
             )
 
             # Payment improvement score (negative means improvement)
@@ -138,7 +171,7 @@ class TemporalFeatureEngineer:
 
         # Recovery instances (count of times payment status improved)
         pay_cols = ['PAY_6', 'PAY_5', 'PAY_4', 'PAY_3', 'PAY_2', 'PAY_0']
-        available_pay_cols = [col for col in pay_cols if col in df.columns]
+        available_pay_cols = [col_name for col_name in pay_cols if col_name in df.columns]
 
         if len(available_pay_cols) >= 2:
             recovery_conditions = []
@@ -148,10 +181,13 @@ class TemporalFeatureEngineer:
                     when(col(available_pay_cols[i]) > col(available_pay_cols[i + 1]), 1).otherwise(0)
                 )
 
-            df_temporal = df_temporal.withColumn(
-                "RECOVERY_INSTANCES",
-                sum(recovery_conditions) if recovery_conditions else lit(0)
-            )
+            if recovery_conditions:
+                df_temporal = df_temporal.withColumn(
+                    "RECOVERY_INSTANCES",
+                    reduce(add, recovery_conditions)
+                )
+            else:
+                df_temporal = df_temporal.withColumn("RECOVERY_INSTANCES", lit(0))
         else:
             df_temporal = df_temporal.withColumn("RECOVERY_INSTANCES", lit(0))
 
@@ -168,7 +204,7 @@ class TemporalFeatureEngineer:
 
         # Bill amount columns (BILL_AMT1 is most recent, BILL_AMT6 is oldest)
         bill_cols = ['BILL_AMT6', 'BILL_AMT5', 'BILL_AMT4', 'BILL_AMT3', 'BILL_AMT2', 'BILL_AMT1']
-        available_bill_cols = [col for col in bill_cols if col in df.columns]
+        available_bill_cols = [col_name for col_name in bill_cols if col_name in df.columns]
 
         if len(available_bill_cols) >= 3:
             # Bill trend slope (increasing/decreasing bills)
@@ -178,13 +214,14 @@ class TemporalFeatureEngineer:
             )
 
             # Bill amount volatility
-            bill_mean = sum([col(bill_col) for bill_col in available_bill_cols]) / len(available_bill_cols)
+            bill_mean = self._safe_column_mean(available_bill_cols)
             df_bills = df_bills.withColumn("bill_mean_temp", bill_mean)
 
+            # Calculate bill volatility
+            bill_variance = self._safe_variance_calculation(available_bill_cols, col("bill_mean_temp"))
             df_bills = df_bills.withColumn(
                 "BILL_AMOUNT_VOLATILITY",
-                sqrt(sum([pow(col(bill_col) - col("bill_mean_temp"), 2)
-                          for bill_col in available_bill_cols]) / len(available_bill_cols))
+                sqrt(bill_variance)
             )
 
             # Average bill amount
@@ -197,13 +234,12 @@ class TemporalFeatureEngineer:
             recent_bills = ['BILL_AMT1', 'BILL_AMT2', 'BILL_AMT3']
             historical_bills = ['BILL_AMT4', 'BILL_AMT5', 'BILL_AMT6']
 
-            available_recent_bills = [col for col in recent_bills if col in df.columns]
-            available_historical_bills = [col for col in historical_bills if col in df.columns]
+            available_recent_bills = [col_name for col_name in recent_bills if col_name in df.columns]
+            available_historical_bills = [col_name for col_name in historical_bills if col_name in df.columns]
 
             if available_recent_bills and available_historical_bills:
-                recent_avg = sum([col(bill_col) for bill_col in available_recent_bills]) / len(available_recent_bills)
-                historical_avg = sum([col(bill_col) for bill_col in available_historical_bills]) / len(
-                    available_historical_bills)
+                recent_avg = self._safe_column_mean(available_recent_bills)
+                historical_avg = self._safe_column_mean(available_historical_bills)
 
                 df_bills = df_bills.withColumn(
                     "DEBT_ACCUMULATION_RATE",
@@ -238,48 +274,63 @@ class TemporalFeatureEngineer:
         pay_amt_cols = ['PAY_AMT6', 'PAY_AMT5', 'PAY_AMT4', 'PAY_AMT3', 'PAY_AMT2', 'PAY_AMT1']
         bill_cols = ['BILL_AMT6', 'BILL_AMT5', 'BILL_AMT4', 'BILL_AMT3', 'BILL_AMT2', 'BILL_AMT1']
 
-        available_pay_amt_cols = [col for col in pay_amt_cols if col in df.columns]
-        available_bill_cols = [col for col in bill_cols if col in df.columns]
+        available_pay_amt_cols = [col_name for col_name in pay_amt_cols if col_name in df.columns]
+        available_bill_cols = [col_name for col_name in bill_cols if col_name in df.columns]
 
         if available_pay_amt_cols and available_bill_cols:
             # Average payment amount
             df_efficiency = df_efficiency.withColumn(
                 "AVG_PAYMENT_AMOUNT",
-                (sum([col(pay_col) for pay_col in available_pay_amt_cols]) / len(available_pay_amt_cols))
+                self._safe_column_mean(available_pay_amt_cols)
             )
 
             # Payment efficiency ratio (payment amount / bill amount)
             efficiency_ratios = []
-            for i, (pay_col, bill_col) in enumerate(zip(available_pay_amt_cols, available_bill_cols)):
+            for pay_col, bill_col in zip(available_pay_amt_cols, available_bill_cols):
                 if pay_col in df.columns and bill_col in df.columns:
                     efficiency_ratios.append(
                         when(col(bill_col) > 0, col(pay_col) / col(bill_col)).otherwise(0.0)
                     )
 
             if efficiency_ratios:
+                if len(efficiency_ratios) == 1:
+                    avg_efficiency = efficiency_ratios[0]
+                else:
+                    avg_efficiency = reduce(add, efficiency_ratios) / len(efficiency_ratios)
+
                 df_efficiency = df_efficiency.withColumn(
                     "AVG_PAYMENT_EFFICIENCY",
-                    (sum(efficiency_ratios) / len(efficiency_ratios))
+                    avg_efficiency
                 )
 
                 # Payment efficiency trend
                 if len(efficiency_ratios) >= 2:
-                    recent_efficiency = sum(efficiency_ratios[:3]) / min(3, len(efficiency_ratios))
-                    historical_efficiency = sum(efficiency_ratios[-3:]) / min(3, len(efficiency_ratios))
+                    recent_ratios = efficiency_ratios[:3] if len(efficiency_ratios) >= 3 else efficiency_ratios[:len(
+                        efficiency_ratios) // 2]
+                    historical_ratios = efficiency_ratios[-3:] if len(efficiency_ratios) >= 3 else efficiency_ratios[
+                                                                                                   len(efficiency_ratios) // 2:]
 
-                    df_efficiency = df_efficiency.withColumn(
-                        "PAYMENT_EFFICIENCY_TREND",
-                        recent_efficiency - historical_efficiency
-                    )
+                    if recent_ratios and historical_ratios:
+                        recent_efficiency = reduce(add, recent_ratios) / len(recent_ratios) if len(
+                            recent_ratios) > 1 else recent_ratios[0]
+                        historical_efficiency = reduce(add, historical_ratios) / len(historical_ratios) if len(
+                            historical_ratios) > 1 else historical_ratios[0]
+
+                        df_efficiency = df_efficiency.withColumn(
+                            "PAYMENT_EFFICIENCY_TREND",
+                            recent_efficiency - historical_efficiency
+                        )
+                    else:
+                        df_efficiency = df_efficiency.withColumn("PAYMENT_EFFICIENCY_TREND", lit(0.0))
                 else:
                     df_efficiency = df_efficiency.withColumn("PAYMENT_EFFICIENCY_TREND", lit(0.0))
 
                 # Payment consistency score (inverse of payment volatility)
-                pay_mean = sum([col(pay_col) for pay_col in available_pay_amt_cols]) / len(available_pay_amt_cols)
+                pay_mean = self._safe_column_mean(available_pay_amt_cols)
                 df_efficiency = df_efficiency.withColumn("pay_mean_temp", pay_mean)
 
-                pay_volatility = sqrt(sum([pow(col(pay_col) - col("pay_mean_temp"), 2)
-                                           for pay_col in available_pay_amt_cols]) / len(available_pay_amt_cols))
+                pay_variance = self._safe_variance_calculation(available_pay_amt_cols, col("pay_mean_temp"))
+                pay_volatility = sqrt(pay_variance)
 
                 df_efficiency = df_efficiency.withColumn(
                     "PAYMENT_CONSISTENCY_SCORE",
@@ -320,10 +371,10 @@ class TemporalFeatureEngineer:
         elif 'LIMIT_BAL' in df.columns:
             # Calculate average bill if not available
             bill_cols = ['BILL_AMT1', 'BILL_AMT2', 'BILL_AMT3', 'BILL_AMT4', 'BILL_AMT5', 'BILL_AMT6']
-            available_bill_cols = [col for col in bill_cols if col in df.columns]
+            available_bill_cols = [col_name for col_name in bill_cols if col_name in df.columns]
 
             if available_bill_cols:
-                avg_bill = sum([col(bill_col) for bill_col in available_bill_cols]) / len(available_bill_cols)
+                avg_bill = self._safe_column_mean(available_bill_cols)
                 df_credit = df_credit.withColumn(
                     "CREDIT_UTILIZATION_RATIO",
                     when(col('LIMIT_BAL') > 0, avg_bill / col('LIMIT_BAL')).otherwise(0.0)
@@ -346,12 +397,15 @@ class TemporalFeatureEngineer:
 
         # Credit utilization trend
         bill_cols = ['BILL_AMT6', 'BILL_AMT5', 'BILL_AMT4', 'BILL_AMT3', 'BILL_AMT2', 'BILL_AMT1']
-        available_bill_cols = [col for col in bill_cols if col in df.columns and 'LIMIT_BAL' in df.columns]
+        available_bill_cols = [col_name for col_name in bill_cols if
+                               col_name in df.columns and 'LIMIT_BAL' in df.columns]
 
         if len(available_bill_cols) >= 3 and 'LIMIT_BAL' in df.columns:
-            recent_utilization = sum([col(bill_col) for bill_col in available_bill_cols[:3]]) / (3 * col('LIMIT_BAL'))
-            historical_utilization = sum([col(bill_col) for bill_col in available_bill_cols[-3:]]) / (
-                        3 * col('LIMIT_BAL'))
+            recent_bills = available_bill_cols[:3]
+            historical_bills = available_bill_cols[-3:]
+
+            recent_utilization = self._safe_column_mean(recent_bills) / col('LIMIT_BAL')
+            historical_utilization = self._safe_column_mean(historical_bills) / col('LIMIT_BAL')
 
             df_credit = df_credit.withColumn(
                 "CREDIT_UTILIZATION_TREND",
@@ -474,9 +528,14 @@ class TemporalFeatureEngineer:
 
         if risk_components:
             # Calculate weighted average risk score
+            if len(risk_components) == 1:
+                risk_score = risk_components[0]
+            else:
+                risk_score = reduce(add, risk_components) / len(risk_components)
+
             df_risk = df_risk.withColumn(
                 "TEMPORAL_RISK_SCORE",
-                (sum(risk_components) / len(risk_components))
+                risk_score
             )
 
             # Risk score categories
